@@ -1,0 +1,236 @@
+context パッケージの紹介
+introduction to context package
+20:55 8 Aug 2016
+Tags: Go, 1.7, context
+
+Yasuharu Goto 
+Software Engineer
+
+* Profile(1/2)
+- Yasuharu Goto
+- @ono_matope
+- ポータルサイトの会社
+- バックエンド開発
+- とくいわざ: Go, Cassandra
+- Go歴 2014/1-
+
+* Contribution
+- Go 1.6 に Contribution
+- net/httpにExpect: 100-continueのクライアントサイド実装を追加
+.image images/contributors_effect.png
+.image images/3665.png
+
+* contextパッケージの紹介
+
+: はい、では本題に入ります
+
+* package context
+- google社内で開発
+- 2014年 golang.org/x/net/contextで公開
+- Go1.7で標準ライブラリに昇格
+
+: contextパッケージとは、Go1.7で新しく加わった標準パッケージです。
+: でもこれ、まったく新しいパッケージではなくて、google社内で開発されて、2014年から x/net/context レポジトリに公開されていましたが、今回標準ライブラリに昇格しました。
+
+* package context
+- _contextパッケージはデッドライン、キャンセレーションシグナル、その他のAPI境界やプロセスをまたぐリクエストスコープ値を運ぶContext型を定義する_
+- 🤔
+
+* 簡単に言うと
+- Goの各種ライブラリへのキャンセル要求のインターフェイスが標準化された
+- GoroutineやAPI境界をまたいだ処理のキャンセル要求が簡単に
+- あと値の受け渡しも簡単に
+
+: ひとことでいうとどうことかというと、
+
+* 従来のキャンセレーション
+
+* そもそもキャンセレーション
+- スロークエリを中断したい
+- 投機的な並列処理を刈り込みたい
+
+* Slow Process
+とても遅いプロセスを実行するHTTPハンドラを想定
+
+.play src/slowprocess1/slowprocess1.go /START OMIT/,/END OMIT/
+
+* Slow Processのタイムアウト処理
+slowProcessの実行時間が長いので、一定時間でhandlerを終了するように変更したい
+timerでhandlerを終了
+
+.play src/slowprocess2/slowprocess2.go /START OMIT/,/END OMIT/
+
+* Slow Processのタイムアウト処理
+
+ただし、handler終了後も派生goroutine上でslowProcessは実行され続けている
+
+.image images/timeout2.png
+
+リソースの無駄なので、slowProcess自体を外部から中断させたい
+
+* done chan による中断要求のイディオム(1/3)
+slowProcessにdone チャンネルを渡し、doneがcloseしたら処理を終了するように変更
+.code src/slowprocess3/slowprocess3.go  /^func slowProcess/,/^}/
+
+* done chan による中断要求のイディオム(2/3)
+slowProcessにdoneを渡す。
+タイムアウトに伴ってdoneをclose
+.play src/slowprocess3/slowprocess3.go /START OMIT/,/END OMIT/
+
+* done chan による中断要求のイディオム(3/3)
+タイムアウトによって派生goroutineの処理を中断させることに成功
+
+.image images/timeout3.png
+
+* context
+
+* context.Context
+
+デッドライン、キャンセレーションシグナルやAPI境界をまたぐ値を運ぶ型
+
+.code src/context_definition.go /START OMIT/,/END OMIT/
+
+使い方(受け取り側)
+
+.code src/context1.go /START OMIT/,/END OMIT/
+
+* Contextの生成
+
+ベースとなるContextを派生して、様々な機能を付加していく
+
+  package context
+
+  // ベースとなるContext
+  func Background()
+
+  // キャンセルできる派生Contexを作成する
+  func WithCancel(parent Context) (ctx Context, cancel CancelFunc)
+
+  // タイムアウトできる派生Contextを作成する
+  func WithDeadline(parent Context, deadline time.Time) (Context, CancelFunc) 
+  func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc)
+
+親のDone()がcloseすると、派生したContextのDone()もクローズする
+
+* 派生Contextの例
+
+WithCancel例
+.play src/withcancel.go /START OMIT/,/END OMIT/
+WithTimeout例
+.play src/withtimeout.go /START OMIT/,/END OMIT/
+タイムアウトリソースの解放のためdefer cancel()すること
+
+* done chan をContextに置き換える(slowProcess)
+doneをctxに置き換え
+.code src/slowprocess4/slowprocess4.go  /^func slowProcess/,/^}/
+
+* done chan をContextに置き換える(handle)
+done とTimerをctxに置き換え
+.play src/slowprocess4/slowprocess4.go /START OMIT/,/END OMIT/
+- タイマーの実装が不要に
+- done chanをContextに置き換えることができた
+
+* done chan vs Context
+- Contextでできることは、今までも done チャンネルでできた
+- 「多少きれいに書ける程度だったら、別にdone チャンネルでもよくない？」
+
+* Context is standard.
+
+- Contextのメリットは、キャンセル要求のインターフェイスが標準化されたこと
+- 従来はdone や Cancel() など、ライブラリごとにバラバラなインターフェイスだった
+- これらを、Contextで統一的にキャンセルしてやるというのが目的
+
+* Context is standard.
+
+いろんなものContextをキャンセルできる(標準パッケージ)
+
+- net
+- net/http
+- os/exec
+
+* package net
+
+Dialのキャンセル
+
+.code src/net.go /START OMIT/,/END OMIT/
+
+従来のDialer.Cancel chanの方法はdeplicate
+
+* package net/http
+
+HTTPリクエストのキャンセル
+
+.play src/http.go /START OMIT/,/END OMIT/
+
+従来のキャンセル方法はdeplicate
+
+- func (t *Transport).CancelRequest(req *Request)
+- Request.Cancel <-chan struct{}
+
+* package net/http (cont)
+
+Transport.DialContext(ctx context.Context, network, addr string) (net.Conn, error) が追加
+Transport.Dial(network, addr string) (net.Conn, error) はdeplicate
+
+
+* package os/exec
+
+exec.Commandのキャンセル (プロセスをkillして中断)
+例
+.play src/exec.go /START OMIT/,/END OMIT/
+
+* context キャンセレーションに対応した3rd party packages
+
+- google.golang.org/grpc
+- github.com/gocql/gocql
+- その他9563パッケージがimport (go-search.org)
+.image images/go-search-imports.png
+
+* キャンセレーションまとめ
+キャンセレーションシグナルの標準化によって、goroutineをまたぐ多様なAPIに、簡単にキャンセル要求が出せるようになった
+
+.image images/cancelation.png
+
+* Storing values in Context
+
+* WithValue
+context.WithValue APIで、任意のキーに値を格納する派生Contextを作れる
+  
+  // 値を格納した派生Contextを作成
+  func WithValue(parent Context, key, val interface{}) Context
+
+  // Contextの値を取得
+  func (Context) Value(key interface{}) interface{}
+
+keyもvalueもinterface{}
+
+: context.WithValue APIを使って、空インターフェイスの値をContextに格納できます。
+: 空インターフェイス型で値のキーを指定することができます
+
+* WithValue
+サーバミドルウェアなど、API境界を超えて値を送り込める
+
+.code src/withvalue.go /START OMIT/,/END OMIT/
+
+- keyもinterface{}。外部パッケージとの衝突を避けるためにunexportedな型を使う
+
+: これによって、サーバーミドルウェアなど、API境界にはさまれた場所に値を送り込むことができます
+
+: (コード) このように、HTTPのミドルウェア側でWithValue関数を使ってリクエストにロケーションの値を格納し、
+: (コード) このように、別のハンドラ内でValueメソッドを使ってロケーションの値を読むことができます
+: キーも空インターフェイスなので、他のパッケージのキーとかぶらないように、独自の非公開型を使ってあげてください
+
+* 用途: net/http/httptrace
+
+httpクライアントリクエストのtraceを取れる。
+http.RequestにContextで格納する(Transportが取得する)
+
+.play src/httptrace.go /START OMIT/,/END OMIT/
+
+* Conclusion
+contextパッケージは
+
+- バラバラだったAPIのキャンセル要求のインターフェイスを統一した
+- APIの互換性を壊さずにAPIをまたぐリクエストスコープ情報を運べるようになった
+- 今後もcontextの適用範囲は拡大していく
+- 使おう！context
